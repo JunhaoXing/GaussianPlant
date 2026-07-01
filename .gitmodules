@@ -14,3 +14,12 @@
 [submodule "third_party/feature-3dgs"]
 	path = third_party/feature-3dgs
 	url = https://github.com/ShijieZhou-UCLA/feature-3dgs.git
+[submodule "third_party/dinov3"]
+	path = third_party/dinov3
+	url = https://github.com/facebookresearch/dinov3.git
+[submodule "Depth-Anything-V2"]
+	path = Depth-Anything-V2
+	url = https://github.com/DepthAnything/Depth-Anything-V2.git
+[submodule "third_party/JAFAR"]
+	path = third_party/JAFAR
+	url = https://github.com/PaulCouairon/JAFAR.git
