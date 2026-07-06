@@ -15,10 +15,14 @@ import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.general_utils import PILtoTorch
 import cv2
+from collections import OrderedDict
 
 class Camera(nn.Module):
-    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap, mask, semantic_feature, branch,
-                 image_name, uid, 
+    _feature_cache = OrderedDict()
+
+    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap, mask,
+                 semantic_feature, branch, image_name, uid,
+                 semantic_feature_path="", feature_cache_size=0,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
@@ -31,7 +35,9 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
-        self.semantic_feature = semantic_feature
+        self._semantic_feature = semantic_feature
+        self.semantic_feature_path = semantic_feature_path
+        self.feature_cache_size = int(feature_cache_size)
         # self.mask = mask
 
         try:
@@ -97,6 +103,34 @@ class Camera(nn.Module):
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+
+    @staticmethod
+    def _load_feature(path):
+        try:
+            feature = torch.load(path, map_location='cpu', weights_only=False)
+        except TypeError:
+            feature = torch.load(path, map_location='cpu')
+        return feature.squeeze(0) if feature.dim() == 4 else feature
+
+    @property
+    def semantic_feature(self):
+        if self._semantic_feature is not None:
+            return self._semantic_feature
+        if not self.semantic_feature_path:
+            return None
+        if self.feature_cache_size <= 0:
+            return self._load_feature(self.semantic_feature_path)
+
+        cache = Camera._feature_cache
+        if self.semantic_feature_path in cache:
+            cache.move_to_end(self.semantic_feature_path)
+            return cache[self.semantic_feature_path]
+
+        feature = self._load_feature(self.semantic_feature_path)
+        cache[self.semantic_feature_path] = feature
+        while len(cache) > self.feature_cache_size:
+            cache.popitem(last=False)
+        return feature
         
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):

@@ -1397,7 +1397,7 @@ class GaussianModel:
 
 
         for cluster_id in range(len(set(labels))):
-            cluster_mask = [labels== cluster_id]
+            cluster_mask = labels == cluster_id
             cluster_points = xyz[cluster_mask]
             if len(cluster_points) > 5:
                 mean,stpr_rot,stpr_scale, anisotropy,rot_matrix_cylinder,rot_matrix_disk = estimate_gs_para_from_cluster(cluster_points)

@@ -136,13 +136,21 @@ COLMAP capture plus a pretrained **feature 3DGS**:
 
 ### Step 1 — Feature 3DGS pretraining
 
-**1a · Per-view features** — *data preprocessing, no code in this repo.*
-The 2D semantic features distilled in Step 1b are produced offline (not by Feature-3DGS's
-built-in LSeg/SAM encoders). Recommended: extract patch features with a **DINO / DINOv3**
-backbone, upsample to full resolution with **[JaFAR](https://github.com/PaulCouairon/JaFAR)**
-(a learned feature upsampler) for dense, edge-aligned per-pixel maps, PCA-reduce to
-**128-d**, and write one map per view under `<scene>/dinov3_dim128/`. Keep this as your own
-preprocessing script — this repo intentionally does not ship it.
+**1a · Per-view features** — extract DINOv3 patch features, optionally upsample with
+**[JaFAR](https://github.com/PaulCouairon/JaFAR)**, PCA-reduce them to **128-d**, and
+write one map per view under `<scene>/dinov3_dim128/`.
+
+```shell
+python extract_dinov3_features.py \
+  -s <root_path>/<scene_name> \
+  --image-dir images \
+  --output-dir dinov3_dim128 \
+  --feature3dgs-dir semantic_features/dinov3 \
+  --checkpoint-dir checkpoints \
+  --upsampler jafar \
+  --out-dim 128 \
+  --fit-pca
+```
 
 **1b · Distillation** — *via the vendored Feature-3DGS training path.*
 Handled by `third_party/feature-3dgs`, a trimmed local copy of
@@ -163,6 +171,36 @@ python train.py -s <scene> -m <scene>/feature_pretrain -f dinov3 --iterations 30
 | `pretrain_clean/<scene>_clean_pruned.ply` | the same cloud, pot/background removed |
 | `dinov3_pca.pth`, `dinov3_text_feats.pth` | shared assets at `--root_path` |
 
+Prepare the Step-2 assets from the Feature-3DGS result:
+
+```shell
+python prepare_step2_assets.py \
+  --ply <scene>/feature_pretrain/point_cloud/iteration_30000/point_cloud.ply \
+  --root <root_path> \
+  --scene-name <scene_name> \
+  --clean-out <root_path>/pretrain_clean/<scene_name>_clean_pruned.ply \
+  --text-out <root_path>/dinov3_text_feats.pth
+```
+
+By default this keeps the legacy colour-bootstrap prototypes. For yellow-leaf scenes, use
+the semantic-only refinement path to rebuild branch/leaf prototypes from DINOv3 feature
+similarity instead of relying on green-vs-brown colour:
+
+```shell
+python prepare_step2_assets.py \
+  --ply <scene>/feature_pretrain/point_cloud/iteration_30000/point_cloud.ply \
+  --root <root_path> \
+  --scene-name <scene_name> \
+  --prototype-mode semantic-refine \
+  --seed-text-feats <root_path>/dinov3_text_feats.pth \
+  --text-out <root_path>/dinov3_text_feats_semantic_refine.pth \
+  --clean-out <root_path>/pretrain_clean/<scene_name>_clean_pruned.ply \
+  --semantic-label-out output/semcls/<scene_name>/semantic_refine_label.ply
+```
+
+The semantic-refine output can be passed to Step 2 with `--text_feats_path` without
+overwriting the default `dinov3_text_feats.pth`.
+
 ### Step 2 — Structure extraction (this repo)
 
 Automatic pipeline: clean cloud → joint StrPr init → auto branch fraction → binding +
@@ -174,7 +212,11 @@ python train.py \
   --root_path   /mnt/data/gaussianplant_data \
   --model_path  output/newplant9/run \
   --clean_ply   pretrain_clean/newplant9_clean_pruned.ply \
-  --label_init joint --branch_frac -1 --cluster_size 40 \
+  --load_iteration 30000 \
+  --mask_path "" \
+  --feature_path "" \
+  --text_feats_path dinov3_text_feats_semantic_refine.pth \
+  --label_init semantic --branch_frac -1 --cluster_size 40 \
   --reg_bind \
   --reg_axis  --lambda_axis 1.0 \
   --reg_graph --graph_from 1000 --graph_interval 50 \
@@ -186,6 +228,12 @@ python train.py \
 `--clean_ply` loads the background-removed cloud; StrPr are clustered from it and AppGS
 bound to them. (Alternatively, drop `--clean_ply` and pass `--load_iteration 30000 --rm_bg`
 to load the raw `feature_pretrain` and mask the background on the fly.)
+If a scene has no `masks/` directory, pass `--mask_path ""`; otherwise the loader treats
+the default mask path as required and skips images without masks.
+Per-view DINOv3 feature maps are lazy-loaded: Step 2 stores their paths at startup and
+only reads a `.pth` when `--reg_sem` actually requests feature supervision for that view.
+With `--reg_sem`, use `--feature_cache_size N` to keep the last `N` feature maps in RAM
+(`0` by default, lowest memory; each cached map is about 36 MB for 128x288x512 fp16).
 
 **Outputs** in `output/<scene>/run/point_cloud/iteration_7000/`:
 

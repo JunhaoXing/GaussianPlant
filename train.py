@@ -95,7 +95,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations,
         # Ground truth for this view
         gt_image = viewpoint_cam.original_image.cuda()
         mask = viewpoint_cam.mask.cuda() if viewpoint_cam.mask is not None else 1.0
-        gt_feature_map = viewpoint_cam.semantic_feature.cuda() if viewpoint_cam.semantic_feature is not None else None
+        gt_feature_map = None
+        if args.reg_sem:
+            semantic_feature = viewpoint_cam.semantic_feature
+            gt_feature_map = semantic_feature.cuda() if semantic_feature is not None else None
 
         # --- Photometric: StrPr should track AppGS, AppGS should track the image ---
         # AppGS is the TEACHER (detached): StrPr (sparse, ~1.6k) chases the AppGS render, but the

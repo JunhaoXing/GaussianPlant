@@ -40,7 +40,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
-    semantic_feature: torch.tensor 
+    semantic_feature: torch.tensor
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -121,13 +121,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         branch_path = os.path.join(branch_folder, f"{extr.name[:-n_remove]}.JPG") if branch_folder != "" else ""
         if branch_path and not os.path.exists(branch_path):
             branch_path = ""
-        semantic_feature_path = os.path.join(feature_folder, f"{extr.name[:-n_remove]}_dinov3_128.pth")  
-        semantic_feature_name = os.path.basename(semantic_feature_path).split(".")[0]
-        try:
-            semantic_feature = torch.load(semantic_feature_path, map_location='cpu')
-            semantic_feature = semantic_feature.squeeze(0) if semantic_feature.dim() == 4 else semantic_feature
-        except:
-            semantic_feature = None
+        semantic_feature_path = ""
+        if feature_folder != "":
+            candidate_feature_path = os.path.join(feature_folder, f"{extr.name[:-n_remove]}_dinov3_128.pth")
+            if os.path.exists(candidate_feature_path):
+                semantic_feature_path = candidate_feature_path
+        semantic_feature = None
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path, mask_path=mask_path,
                               feature_path=semantic_feature_path, branch_path=branch_path,
@@ -137,6 +136,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
     sys.stdout.write('\n')
     return cam_infos
+
+def inferSemanticFeatureDim(cam_infos):
+    for cam_info in cam_infos:
+        if not cam_info.feature_path:
+            continue
+        try:
+            feature = torch.load(cam_info.feature_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            feature = torch.load(cam_info.feature_path, map_location='cpu')
+        feature = feature.squeeze(0) if feature.dim() == 4 else feature
+        return feature.shape[0]
+    return None
 
 def fetchPly(path):
     plydata = PlyData.read(path)
@@ -227,10 +238,7 @@ def readColmapSceneInfo(path, images, depths, masks,features,eval, train_test_ex
         branch_folder = os.path.join(path,features,'branch'), test_cam_names_list=test_cam_names_list)
     
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
-    try:
-        semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
-    except:
-        semantic_feature_dim = None
+    semantic_feature_dim = inferSemanticFeatureDim(cam_infos)
 
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]

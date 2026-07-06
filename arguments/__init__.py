@@ -55,6 +55,8 @@ class ModelParams(ParamGroup):
         self._depths = ""
         self.mask_path = "masks"
         self.feature_path = "dinov3_dim128"
+        self.feature_cache_size = 0
+        self.text_feats_path = ""
         self.f_name = ""
         self._resolution = -1
         self._white_background = False
