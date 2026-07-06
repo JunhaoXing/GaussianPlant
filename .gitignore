@@ -7,18 +7,17 @@ diff_rasterization/dist
 tensorboard_3d
 screenshots
 data
+dataset/
 *.ply
 Depth-Anything-V2
 *.obj
 *.mtl
 checkpoints
 
-# third_party holds the Feature-3DGS submodule (Step 1). Keep the dir tracked for the
-# submodule, but ignore the old locally-vendored rasterizer copy and build artefacts.
-third_party/diff-gaussian-rasterization-feature/
+# third-party build artefacts.
 third_party/**/*.egg-info/
 third_party/**/*.so
-
+	
 # third-party feature/depth encoders (Step 1 only)
 dinov3
 # editor / vim swap files

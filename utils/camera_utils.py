@@ -22,8 +22,8 @@ WARNED = False
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
     image = Image.open(cam_info.image_path)
     image = ImageOps.exif_transpose(image)
-    # print("Loading branch:", cam_info.branch_path)
-    branch = Image.open(cam_info.branch_path)
+    # Branch masks are optional for the README --clean_ply path.
+    branch = Image.open(cam_info.branch_path) if cam_info.branch_path else None
     mask_binary = None
     if cam_info.mask_path != "":
         mask = Image.open(cam_info.mask_path).convert('L')

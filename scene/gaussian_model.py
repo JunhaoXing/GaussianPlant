@@ -37,10 +37,6 @@ from utils.loss_utils import mst_loss, loss_endpoints
 from utils.pytorch3d_compat import chamfer_distance
 import open3d as o3d
 import torch.nn.functional as F
-try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
-except:
-    pass
 
 
 def _otsu_threshold(score, bins=256):

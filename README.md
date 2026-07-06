@@ -85,10 +85,10 @@ print('torch', torch.__version__, 'gsplat', gsplat.__version__, 'cuda', torch.cu
 > ```
 
 > [!IMPORTANT]
-> The above is all **Step 2** (this repo) needs. **Step 1** (feature-3DGS pretraining)
-> uses the [Feature-3DGS](https://github.com/ShijieZhou-UCLA/feature-3dgs) submodule,
-> which has its **own** conda env (`feature_3dgs`, py3.8 / cu118) and rasterizer — set it
-> up separately, and only if you intend to (re)run Step 1.
+> The above is all **Step 2** needs. **Step 1b** uses the lightweight
+> `third_party/feature-3dgs` copy vendored in this repo. It has been trimmed to the
+> training code path we use and renders with `gsplat`; it no longer needs the upstream
+> diff-gaussian rasterizer submodule.
 
 ---
 
@@ -130,8 +130,8 @@ COLMAP capture plus a pretrained **feature 3DGS**:
 
 ```
  images ─▶ [1a] DINOv3 + JaFAR    ─▶ [1b] Feature-3DGS      ─▶ [2] Structure extraction
-           per-view feature maps      distill → feature 3DGS    (this repo: StrPr + AppGS)
-           (preprocessing)            (submodule)               branch skeleton + leaf instances
+          per-view feature maps      distill → feature 3DGS    (this repo: StrPr + AppGS)
+          (preprocessing)            (vendored gsplat copy)    branch skeleton + leaf instances
 ```
 
 ### Step 1 — Feature 3DGS pretraining
@@ -144,16 +144,16 @@ backbone, upsample to full resolution with **[JaFAR](https://github.com/PaulCoua
 **128-d**, and write one map per view under `<scene>/dinov3_dim128/`. Keep this as your own
 preprocessing script — this repo intentionally does not ship it.
 
-**1b · Distillation** — *via the Feature-3DGS submodule.*
-Handled by upstream [Feature-3DGS](https://github.com/ShijieZhou-UCLA/feature-3dgs) at
-`third_party/feature-3dgs`. Point it at the Step-1a feature maps (in place of its default
-encoder) and set the feature dimension to **128** (`NUM_SEMANTIC_CHANNELS` in its
-`.../diff-gaussian-rasterization-feature/cuda_rasterizer/config.h`):
+**1b · Distillation** — *via the vendored Feature-3DGS training path.*
+Handled by `third_party/feature-3dgs`, a trimmed local copy of
+[Feature-3DGS](https://github.com/ShijieZhou-UCLA/feature-3dgs) adapted to `gsplat`.
+Point it at the Step-1a feature maps (in place of its default encoder). The semantic
+feature dimension is read from the saved feature maps, so there is no
+`NUM_SEMANTIC_CHANNELS` rasterizer config to edit.
 
 ```shell
-git submodule update --init --recursive third_party/feature-3dgs
-cd third_party/feature-3dgs        # create its env + build its rasterizer (see its README)
-python train.py -s <scene> -m <scene>/feature_pretrain --speedup --iterations 30000
+cd third_party/feature-3dgs
+python train.py -s <scene> -m <scene>/feature_pretrain -f dinov3 --iterations 30000
 ```
 
 **Step-2 input contract** — whatever the encoder, Step 2 only consumes:

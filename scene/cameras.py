@@ -42,7 +42,7 @@ class Camera(nn.Module):
             self.data_device = torch.device("cuda")
 
         resized_image_rgb = PILtoTorch(image, resolution)
-        resized_branch_rgb = PILtoTorch(branch, resolution)
+        resized_branch_rgb = PILtoTorch(branch, resolution) if branch is not None else None
         gt_image = resized_image_rgb[:3, ...]
         resized_mask_rgb = None
         if mask is not None:
@@ -67,7 +67,7 @@ class Camera(nn.Module):
         self.image_height = self.original_image.shape[1]
         self.mask = resized_mask_rgb
         self.invdepthmap = None
-        self.branch = resized_branch_rgb.clamp(0.0, 1.0).to(self.data_device)
+        self.branch = resized_branch_rgb.clamp(0.0, 1.0).to(self.data_device) if resized_branch_rgb is not None else None
         self.depth_reliable = False
         if invdepthmap is not None:
             self.depth_mask = torch.ones_like(self.alpha_mask)

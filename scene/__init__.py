@@ -95,8 +95,20 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
         
         # load pca and text feats
-        pca_checkpoint = torch.load(os.path.join(args.root_path, 'dinov3_pca.pth'), map_location='cpu')
-        text_checkpoints = torch.load(os.path.join(args.root_path, "dinov3_text_feats.pth"), map_location='cpu')
+        try:
+            pca_checkpoint = torch.load(
+                os.path.join(args.root_path, 'dinov3_pca.pth'),
+                map_location='cpu',
+                weights_only=False,
+            )
+            text_checkpoints = torch.load(
+                os.path.join(args.root_path, "dinov3_text_feats.pth"),
+                map_location='cpu',
+                weights_only=False,
+            )
+        except TypeError:
+            pca_checkpoint = torch.load(os.path.join(args.root_path, 'dinov3_pca.pth'), map_location='cpu')
+            text_checkpoints = torch.load(os.path.join(args.root_path, "dinov3_text_feats.pth"), map_location='cpu')
         gaussians.text_feats = text_checkpoints['text_feats_dim128'][:3,].to(args.data_device)  # [stem,leaf]
         gaussians.text_feats_fgbg = text_checkpoints['text_feats_dim128'][2:,].to(args.data_device)  # [background, plant]
         gaussians.pca = pca_checkpoint['pca']

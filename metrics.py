@@ -15,11 +15,27 @@ from PIL import Image
 import torch
 import torchvision.transforms.functional as tf
 from utils.loss_utils import ssim
-from lpipsPyTorch import lpips
 import json
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser
+
+try:
+    import lpips as lpips_pkg
+except ImportError:
+    lpips_pkg = None
+
+
+_lpips_models = {}
+
+
+def lpips_score(x, y, net_type="vgg"):
+    if lpips_pkg is None:
+        return None
+    if net_type not in _lpips_models:
+        _lpips_models[net_type] = lpips_pkg.LPIPS(net=net_type).cuda().eval()
+    with torch.no_grad():
+        return _lpips_models[net_type](x * 2.0 - 1.0, y * 2.0 - 1.0).mean()
 
 def readImages(renders_dir, gt_dir):
     renders = []
@@ -71,19 +87,25 @@ def evaluate(model_paths):
                 for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
                     ssims.append(ssim(renders[idx], gts[idx]))
                     psnrs.append(psnr(renders[idx], gts[idx]))
-                    lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
+                    lp = lpips_score(renders[idx], gts[idx], net_type='vgg')
+                    if lp is not None:
+                        lpipss.append(lp)
 
                 print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
                 print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
-                print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".5"))
+                lpips_mean = torch.tensor(lpipss).mean().item() if lpipss else None
+                if lpips_mean is None:
+                    print("  LPIPS: skipped (install the 'lpips' package to enable it)")
+                else:
+                    print("  LPIPS: {:>12.7f}".format(lpips_mean, ".5"))
                 print("")
 
                 full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
                                                         "PSNR": torch.tensor(psnrs).mean().item(),
-                                                        "LPIPS": torch.tensor(lpipss).mean().item()})
+                                                        "LPIPS": lpips_mean})
                 per_view_dict[scene_dir][method].update({"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
                                                             "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
-                                                            "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)}})
+                                                            "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)} if lpipss else {}})
 
             with open(scene_dir + "/results.json", 'w') as fp:
                 json.dump(full_dict[scene_dir], fp, indent=True)

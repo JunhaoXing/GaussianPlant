@@ -30,17 +30,15 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
-    depth_params: dict
+    image: np.array
     image_path: str
     image_name: str
-    depth_path: str
-    mask_path: str
-    feature_path: str
-    branch_path: str
     width: int
     height: int
-    is_test: bool
     semantic_feature: torch.tensor 
+    semantic_feature_path: str 
+    semantic_feature_name: str 
+
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -48,8 +46,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
-    is_nerf_synthetic: bool
-    semantic_feature_dim: int
+    semantic_feature_dim: int 
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -74,7 +71,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, mask_folder, feature_folder, branch_folder,test_cam_names_list):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, semantic_feature_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -91,11 +88,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
-        if intr.model=="SIMPLE_PINHOLE":
+        if intr.model=="SIMPLE_PINHOLE" or intr.model=="SIMPLE_RADIAL":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
-        elif intr.model=="PINHOLE":
+        ### elif intr.model=="PINHOLE":
+        elif intr.model=="PINHOLE" or intr.model=="OPENCV":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
             FovY = focal2fov(focal_length_y, height)
@@ -103,38 +101,22 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        n_remove = len(extr.name.split('.')[-1]) + 1
-        depth_params = None
-        if depths_params is not None:
-            try:
-                depth_params = depths_params[extr.name[:-n_remove]]
-            except:
-                print("\n", key, "not found in depths_params")
 
-        image_path = os.path.join(images_folder, extr.name)
-        image_name = extr.name
-        depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
-        mask_path = os.path.join(mask_folder, f"{extr.name[:-n_remove]}.JPG") if mask_folder != "" else ""
-        if mask_folder != "" and not os.path.exists(mask_path):
-            print(f"\nSkipping {image_name}: mask not found at {mask_path}")
-            continue
-        branch_path = os.path.join(branch_folder, f"{extr.name[:-n_remove]}.JPG") if branch_folder != "" else ""
-        if branch_path and not os.path.exists(branch_path):
-            branch_path = ""
-        semantic_feature_path = os.path.join(feature_folder, f"{extr.name[:-n_remove]}_dinov3_128.pth")  
+        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_name = os.path.basename(image_path).split(".")[0]
+        image = Image.open(image_path) 
+
+        
+        semantic_feature_path = os.path.join(semantic_feature_folder, image_name) + '_fmap_CxHxW.pt' 
         semantic_feature_name = os.path.basename(semantic_feature_path).split(".")[0]
-        try:
-            semantic_feature = torch.load(semantic_feature_path, map_location='cpu')
-            semantic_feature = semantic_feature.squeeze(0) if semantic_feature.dim() == 4 else semantic_feature
-        except:
-            semantic_feature = None
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
-                              image_path=image_path, image_name=image_name, depth_path=depth_path, mask_path=mask_path,
-                              feature_path=semantic_feature_path, branch_path=branch_path,
-                              width=width, height=height, is_test=image_name in test_cam_names_list,
-                              semantic_feature=semantic_feature)
-        cam_infos.append(cam_info)
+        semantic_feature = torch.load(semantic_feature_path) 
 
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              semantic_feature=semantic_feature,
+                              semantic_feature_path=semantic_feature_path,
+                              semantic_feature_name=semantic_feature_name) 
+        cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
 
@@ -142,14 +124,8 @@ def fetchPly(path):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    try:
-        colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
-    except:
-        colors = np.tile([1, 0, 0], (positions.shape[0], 1))
-    if {"nx", "ny", "nz"}.issubset(vertices.data.dtype.names):
-        normals = np.vstack([vertices["nx"], vertices["ny"], vertices["nz"]]).T  # (N, 3)
-    else:
-        normals = np.tile([0, 0, 1], (positions.shape[0], 1))  # Default normals pointing up
+    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+    normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
 def storePly(path, xyz, rgb):
@@ -169,7 +145,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, depths, masks,features,eval, train_test_exp, llffhold=8):
+def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -180,60 +156,33 @@ def readColmapSceneInfo(path, images, depths, masks,features,eval, train_test_ex
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+    
+    reading_dir = "images" if images == None else images
 
-    depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
-    ## if depth_params_file isnt there AND depths file is here -> throw error
-    depths_params = None
-    if depths != "":
-        try:
-            with open(depth_params_file, "r") as f:
-                depths_params = json.load(f)
-            all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
-            if (all_scales > 0).sum():
-                med_scale = np.median(all_scales[all_scales > 0])
-            else:
-                med_scale = 0
-            for key in depths_params:
-                depths_params[key]["med_scale"] = med_scale
-
-        except FileNotFoundError:
-            print(f"Error: depth_params.json file not found at path '{depth_params_file}'.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
-            sys.exit(1)
+    if foundation_model =='sam':
+        semantic_feature_dir = "sam_embeddings" 
+    elif foundation_model =='lseg':
+        semantic_feature_dir = "rgb_feature_langseg" 
+    elif foundation_model == 'dinov3':
+        semantic_feature_dir = "dinov3_fmap"
+    else:
+        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, or dinov3.")
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
+                                           images_folder=os.path.join(path, reading_dir), semantic_feature_folder=os.path.join(path, semantic_feature_dir))
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+    ###cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : int(x.image_name.split('.')[0])) ### if img name is number
+    # cam_infos =cam_infos[:30] ###: for scannet only
+    # print(cam_infos)
+    semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
 
     if eval:
-        if "360" in path:
-            llffhold = 8
-        if llffhold:
-            print("------------LLFF HOLD-------------")
-            cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]
-            cam_names = sorted(cam_names)
-            test_cam_names_list = [name for idx, name in enumerate(cam_names) if idx % llffhold == 0]
-        else:
-            with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
-                test_cam_names_list = [line.strip() for line in file]
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
+        # for i, item in enumerate(test_cam_infos): ### check test set
+        #     print('test image:', item[7])
     else:
-        test_cam_names_list = []
-
-    reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(
-        cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
-        images_folder=os.path.join(path, reading_dir), 
-        depths_folder=os.path.join(path, depths) if depths != "" else "", 
-        mask_folder=os.path.join(path,'masks') if masks != "" else "" ,
-        feature_folder=os.path.join(path, features) if features != "" else "",
-        branch_folder = os.path.join(path,features,'branch'), test_cam_names_list=test_cam_names_list)
-    
-    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
-    try:
-        semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
-    except:
-        semantic_feature_dim = None
-
-    train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
-    test_cam_infos = [c for c in cam_infos if c.is_test]
+        train_cam_infos = cam_infos
+        test_cam_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
@@ -244,6 +193,7 @@ def readColmapSceneInfo(path, images, depths, masks,features,eval, train_test_ex
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         try:
             xyz, rgb, _ = read_points3D_binary(bin_path)
+            
         except:
             xyz, rgb, _ = read_points3D_text(txt_path)
         storePly(ply_path, xyz, rgb)
@@ -251,17 +201,15 @@ def readColmapSceneInfo(path, images, depths, masks,features,eval, train_test_ex
         pcd = fetchPly(ply_path)
     except:
         pcd = None
-
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
-                           semantic_feature_dim=semantic_feature_dim,
-                           is_nerf_synthetic=False)
+                           semantic_feature_dim=semantic_feature_dim) 
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, depths_folder, white_background, is_test, extension=".png"):
+def readCamerasFromTransforms(path, transformsfile, white_background, semantic_feature_folder, extension=".png"): 
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -285,7 +233,7 @@ def readCamerasFromTransforms(path, transformsfile, depths_folder, white_backgro
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
-            mask_path = os.path.join(path, frame["mask_path"] + extension) if "mask_path" in frame else ""
+
             im_data = np.array(image.convert("RGBA"))
 
             bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
@@ -298,33 +246,40 @@ def readCamerasFromTransforms(path, transformsfile, depths_folder, white_backgro
             FovY = fovy 
             FovX = fovx
 
-            depth_path = os.path.join(depths_folder, f"{image_name}.png") if depths_folder != "" else ""
-
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX,
-                            image_path=image_path, image_name=image_name, mask_path=mask_path,
-                            width=image.size[0], height=image.size[1], depth_path=depth_path, depth_params=None, is_test=is_test))
+            
+            semantic_feature_path = os.path.join(semantic_feature_folder, image_name) + '_fmap_CxHxW.pt' 
+            semantic_feature_name = os.path.basename(semantic_feature_path).split(".")[0]
+            semantic_feature = torch.load(semantic_feature_path)
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
+                              semantic_feature=semantic_feature,
+                              semantic_feature_path=semantic_feature_path,
+                              semantic_feature_name=semantic_feature_name)) 
             
     return cam_infos
 
-def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"):
+def readNerfSyntheticInfo(path, foundation_model, white_background, eval, extension=".png"): 
+    if foundation_model =='sam':
+        semantic_feature_dir = "sam_embeddings" 
+    elif foundation_model =='lseg':
+        semantic_feature_dir = "rgb_feature_langseg" 
+    elif foundation_model == 'dinov3':
+        semantic_feature_dir = "dinov3_fmap"
+    else:
+        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, or dinov3.")
 
-    depths_folder=os.path.join(path, depths) if depths != "" else ""
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", depths_folder, white_background, False, extension)
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, semantic_feature_folder=os.path.join(path, semantic_feature_dir)) 
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", depths_folder, white_background, True, extension)
+    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, semantic_feature_folder=os.path.join(path, semantic_feature_dir)) 
     
     if not eval:
         train_cam_infos.extend(test_cam_infos)
         test_cam_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
-    if os.path.exists(os.path.join(path, "points_3dgs.ply")):
-        ply_path = os.path.join(path, "points_3dgs.ply")
-        print("Start from 3DGS points.")
-    else:
-        ply_path = os.path.join(path, "points3d.ply")
-        print("Start from points3d")
+
+    ply_path = os.path.join(path, "points3d.ply")
     if not os.path.exists(ply_path):
         # Since this data set has no colmap data, we start with random points
         num_pts = 100_000
@@ -340,13 +295,13 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
         pcd = fetchPly(ply_path)
     except:
         pcd = None
-
+    semantic_feature_dim = train_cam_infos[0].semantic_feature.shape[0] 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
-                           is_nerf_synthetic=True)
+                           semantic_feature_dim=semantic_feature_dim) 
     return scene_info
 
 sceneLoadTypeCallbacks = {

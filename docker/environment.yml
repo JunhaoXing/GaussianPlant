@@ -248,6 +248,5 @@ dependencies:
     - scikit-image
     - faiss-gpu
     - trimesh
-    # - submodules/diff-gaussian-rasterization
     # - submodules/simple-knn
     # - submodules/fused-ssim

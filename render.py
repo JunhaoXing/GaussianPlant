@@ -38,13 +38,6 @@ from utils.pose_utils import render_path_spiral
 from utils.visualization import feature_visualize_saving
 import sys
 
-try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
-    SPARSE_ADAM_AVAILABLE = True
-except:
-    SPARSE_ADAM_AVAILABLE = False
-    
-    
 def save_similarity_outputs(per_patch_similarity_to_text, save_path,prefix,image_pil, mask=None):
     pred_idx = per_patch_similarity_to_text.argmax(1).squeeze(0)
     probs = torch.softmax(per_patch_similarity_to_text, dim=1)   

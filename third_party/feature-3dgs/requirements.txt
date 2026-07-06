@@ -1,0 +1,13 @@
+setuptools
+numpy
+torch
+torchvision
+gsplat
+simple-knn
+plyfile
+Pillow
+tqdm
+tensorboard
+matplotlib
+scikit-image
+scikit-learn
