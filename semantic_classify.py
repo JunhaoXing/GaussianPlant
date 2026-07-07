@@ -2,13 +2,13 @@
 """
 Standalone semantic branch/leaf classifier for a *cleaned* plant point cloud.
 
-Purely semantic: it classifies each Gaussian by the cosine similarity of its 128-d
-DINOv3 feature (stored as `semantic_0..127` in the feature-3DGS ply) to the
-`branch` / `leaf` DINOv3 *text* features in `dinov3_text_feats.pth`. No colour, no
+Purely semantic: it classifies each Gaussian by the cosine similarity of its
+semantic feature (stored as `semantic_*` in the feature-3DGS ply) to the
+`branch` / `leaf` text features in `dinov3_text_feats.pth` or `dinotxt_text_feats.pth`. No colour, no
 geometry — meant for cases where the colour cue fails (e.g. yellow / autumn leaves).
 
-The text prompts were computed offline and stored as `text_feats_dim128` of shape
-[4, 128]. The index → prompt mapping may differ across checkpoints, so
+The text prompts were computed offline and stored as `text_feats` or `text_feats_dim*`.
+The index → prompt mapping may differ across checkpoints, so
 `--branch_idx` / `--leaf_idx` are exposed and the script prints the branch fraction
 for every prompt pair so you can pick the right one on your own data.
 
@@ -44,6 +44,18 @@ def load_semantic_ply(path):
         raise ValueError(f"{path} has no semantic_* channels — is this a feature-3DGS ply?")
     sem = np.stack([v[n] for n in sem_names], axis=1).astype(np.float32)  # [N, D]
     return xyz, sem
+
+
+def get_text_features(payload):
+    if "text_feats" in payload:
+        return payload["text_feats"].float()
+    for key in ("text_feats_dim1024", "text_feats_dim128"):
+        if key in payload:
+            return payload[key].float()
+    for key, value in payload.items():
+        if key.startswith("text_feats_dim"):
+            return value.float()
+    raise KeyError("No text feature tensor found. Expected text_feats or text_feats_dim*.")
 
 
 def save_ply(path, xyz, extra_scalars=None, rgb=None):
@@ -84,8 +96,10 @@ def main():
     xyz = torch.from_numpy(xyz_np).to(dev)
     vf = F.normalize(torch.from_numpy(sem_np).to(dev), dim=-1)            # [N, D]
 
-    tf = torch.load(os.path.join(args.root_path, "dinov3_text_feats.pth"),
-                    map_location="cpu", weights_only=False)["text_feats_dim128"]
+    text_path = os.path.join(args.root_path, "dinov3_text_feats.pth")
+    if not os.path.exists(text_path):
+        text_path = os.path.join(args.root_path, "dinotxt_text_feats.pth")
+    tf = get_text_features(torch.load(text_path, map_location="cpu", weights_only=False))
     tf = F.normalize(tf.to(dev), dim=-1)                                  # [P, D]
     cos = vf @ tf.T                                                       # [N, P]
 

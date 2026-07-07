@@ -165,8 +165,10 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
         semantic_feature_dir = "rgb_feature_langseg" 
     elif foundation_model == 'dinov3':
         semantic_feature_dir = "dinov3_fmap"
+    elif foundation_model == 'dinotxt':
+        semantic_feature_dir = "dinotxt_fmap"
     else:
-        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, or dinov3.")
+        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, dinov3, or dinotxt.")
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir), semantic_feature_folder=os.path.join(path, semantic_feature_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
@@ -265,8 +267,10 @@ def readNerfSyntheticInfo(path, foundation_model, white_background, eval, extens
         semantic_feature_dir = "rgb_feature_langseg" 
     elif foundation_model == 'dinov3':
         semantic_feature_dir = "dinov3_fmap"
+    elif foundation_model == 'dinotxt':
+        semantic_feature_dir = "dinotxt_fmap"
     else:
-        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, or dinov3.")
+        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, dinov3, or dinotxt.")
 
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, semantic_feature_folder=os.path.join(path, semantic_feature_dir)) 

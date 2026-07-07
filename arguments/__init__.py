@@ -51,7 +51,7 @@ class ModelParams(ParamGroup):
         self.root_path = "/mnt/data"
         self._model_path = ""
         self._images = "images"
-        # self.pretrain_path = "feature_pretrain"
+        self.pretrain_path = "feature_pretrain"
         self._depths = ""
         self.mask_path = "masks"
         self.feature_path = "dinov3_dim128"

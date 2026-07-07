@@ -74,6 +74,25 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
+def resolve_semantic_feature_path(feature_folder, stem):
+    if feature_folder == "":
+        return ""
+    candidates = [
+        f"{stem}_dinov3_128.pth",
+        f"{stem}_dinotxt_1024.pth",
+        f"{stem}_fmap_CxHxW.pt",
+    ]
+    for name in candidates:
+        path = os.path.join(feature_folder, name)
+        if os.path.exists(path):
+            return path
+    for pattern in (f"{stem}_*.pth", f"{stem}_*.pt"):
+        matches = sorted(Path(feature_folder).glob(pattern))
+        if matches:
+            return str(matches[0])
+    return ""
+
+
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, mask_folder, feature_folder, branch_folder,test_cam_names_list):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
@@ -121,11 +140,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         branch_path = os.path.join(branch_folder, f"{extr.name[:-n_remove]}.JPG") if branch_folder != "" else ""
         if branch_path and not os.path.exists(branch_path):
             branch_path = ""
-        semantic_feature_path = ""
-        if feature_folder != "":
-            candidate_feature_path = os.path.join(feature_folder, f"{extr.name[:-n_remove]}_dinov3_128.pth")
-            if os.path.exists(candidate_feature_path):
-                semantic_feature_path = candidate_feature_path
+        semantic_feature_path = resolve_semantic_feature_path(feature_folder, extr.name[:-n_remove])
         semantic_feature = None
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path, mask_path=mask_path,

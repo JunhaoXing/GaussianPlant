@@ -99,14 +99,16 @@ COLMAP capture plus a pretrained **feature 3DGS**:
 
 ```
 <root_path>/
-├── dinov3_pca.pth, dinov3_text_feats.pth      # shared assets
+├── dinov3_pca.pth, dinov3_text_feats.pth      # optional DINOv3 PCA-128 assets
+├── dinotxt_text_feats.pth                     # DINOtxt prompt prototypes, 1024-d
 ├── pretrain_clean/
 │   └── <scene>_clean_pruned.ply               # plant-only feature cloud — PRODUCED, see note (StrPr/AppGS source)
 └── <scene>/
     ├── sparse/0, images/, masks/, depths/     # COLMAP scene
     ├── dinov3_dim128/                         # per-view DINOv3+JaFAR feature maps, PCA-128 (Step 1a)
-    └── feature_pretrain/point_cloud/iteration_30000/
-        ├── point_cloud.ply                    # 3DGS + 128-d semantic feature (no label; see note)
+    ├── dinotxt_dim1024/, dinotxt_fmap/        # per-view DINOtxt patch features, 1024-d
+    └── feature_pretrain*/point_cloud/iteration_30000/
+        ├── point_cloud.ply                    # 3DGS + semantic feature (no label; see note)
         └── point_cloud_branch_dense.ply       # GT dense branch points — EVALUATION ONLY (not used in training)
 ```
 
@@ -117,7 +119,7 @@ COLMAP capture plus a pretrained **feature 3DGS**:
 >   plant **masks** to 3D (the built-in `--rm_bg` path, `compute_plant_mask`). Pass the
 >   result via `--clean_ply`, or skip it and let `--rm_bg` build it on the fly.
 > - **The feature 3DGS carries no branch/leaf label.** `point_cloud.ply` stores colour
->   + the 128-d semantic feature only; the branch/leaf label is **derived in Step 2** at
+>   + the semantic feature only; the branch/leaf label is **derived in Step 2** at
 >   init (`build_strpr_from_gs`, joint = colour + geometry + semantic), not loaded from
 >   the pretrain.
 > - **Training uses no ground truth.** Step 2 is fully self-supervised (re-rendering
@@ -129,14 +131,34 @@ COLMAP capture plus a pretrained **feature 3DGS**:
 ## Pipeline
 
 ```
- images ─▶ [1a] DINOv3 + JaFAR    ─▶ [1b] Feature-3DGS      ─▶ [2] Structure extraction
+ images ─▶ [1a] DINOtxt / DINOv3  ─▶ [1b] Feature-3DGS      ─▶ [2] Structure extraction
           per-view feature maps      distill → feature 3DGS    (this repo: StrPr + AppGS)
           (preprocessing)            (vendored gsplat copy)    branch skeleton + leaf instances
 ```
 
 ### Step 1 — Feature 3DGS pretraining
 
-**1a · Per-view features** — extract DINOv3 patch features, optionally upsample with
+**1a · Per-view features** — the preferred text-aligned path uses DINOtxt directly:
+
+```shell
+python extract_dinotxt_features.py \
+  -s <root_path>/<scene_name> \
+  --image-dir images \
+  --output-dir dinotxt_dim1024 \
+  --feature3dgs-dir dinotxt_fmap \
+  --checkpoint-dir checkpoints \
+  --max-long-side 1024
+```
+
+This writes native 1024-d DINOtxt patch features and prompt prototypes:
+
+| asset | description |
+|-------|-------------|
+| `<scene>/dinotxt_dim1024/*_dinotxt_1024.pth` | GaussianPlant feature maps |
+| `<scene>/dinotxt_fmap/*_fmap_CxHxW.pt` | Feature-3DGS feature maps |
+| `<root_path>/dinotxt_text_feats.pth` | `[leaf, branch, background, plant]` prompt prototypes |
+
+The legacy PCA-128 path is still available: extract DINOv3 patch features, optionally upsample with
 **[JaFAR](https://github.com/PaulCouairon/JaFAR)**, PCA-reduce them to **128-d**, and
 write one map per view under `<scene>/dinov3_dim128/`.
 
@@ -145,7 +167,7 @@ python extract_dinov3_features.py \
   -s <root_path>/<scene_name> \
   --image-dir images \
   --output-dir dinov3_dim128 \
-  --feature3dgs-dir semantic_features/dinov3 \
+  --feature3dgs-dir dinov3_fmap \
   --checkpoint-dir checkpoints \
   --upsampler jafar \
   --out-dim 128 \
@@ -161,30 +183,35 @@ feature dimension is read from the saved feature maps, so there is no
 
 ```shell
 cd third_party/feature-3dgs
-python train.py -s <scene> -m <scene>/feature_pretrain -f dinov3 --iterations 30000
+python train.py -s <scene> -m <scene>/feature_pretrain_dinotxt -f dinotxt --iterations 30000
 ```
 
 **Step-2 input contract** — whatever the encoder, Step 2 only consumes:
 | asset | description |
 |-------|-------------|
-| `feature_pretrain/.../point_cloud.ply` | 3DGS with the 128-d semantic feature (no label channel) |
+| `feature_pretrain*/point_cloud.ply` | 3DGS with semantic feature, e.g. 1024-d DINOtxt or 128-d DINOv3 |
 | `pretrain_clean/<scene>_clean_pruned.ply` | the same cloud, pot/background removed |
-| `dinov3_pca.pth`, `dinov3_text_feats.pth` | shared assets at `--root_path` |
+| `dinotxt_text_feats.pth` or `dinov3_text_feats.pth` | shared prompt/prototype assets at `--root_path` |
 
 Prepare the Step-2 assets from the Feature-3DGS result:
 
 ```shell
 python prepare_step2_assets.py \
-  --ply <scene>/feature_pretrain/point_cloud/iteration_30000/point_cloud.ply \
+  --ply <scene>/feature_pretrain_dinotxt/point_cloud/iteration_30000/point_cloud.ply \
   --root <root_path> \
   --scene-name <scene_name> \
+  --clean-mode semantic \
+  --prototype-mode semantic-refine \
+  --seed-text-feats <root_path>/dinotxt_text_feats.pth \
+  --text-out <root_path>/dinotxt_text_feats_semantic_refine.pth \
   --clean-out <root_path>/pretrain_clean/<scene_name>_clean_pruned.ply \
-  --text-out <root_path>/dinov3_text_feats.pth
+  --semantic-label-out output/semcls/<scene_name>/dinotxt_semantic_refine_label.ply
 ```
 
-By default this keeps the legacy colour-bootstrap prototypes. For yellow-leaf scenes, use
-the semantic-only refinement path to rebuild branch/leaf prototypes from DINOv3 feature
-similarity instead of relying on green-vs-brown colour:
+For the legacy PCA-128 DINOv3 path, use the same command with
+`feature_pretrain`, `dinov3_text_feats.pth`, and `dinov3_text_feats_semantic_refine.pth`.
+The older colour-bootstrap mode remains available by omitting `--clean-mode semantic`
+and `--prototype-mode semantic-refine`.
 
 ```shell
 python prepare_step2_assets.py \
@@ -199,7 +226,7 @@ python prepare_step2_assets.py \
 ```
 
 The semantic-refine output can be passed to Step 2 with `--text_feats_path` without
-overwriting the default `dinov3_text_feats.pth`.
+overwriting the default prompt/prototype file.
 
 ### Step 2 — Structure extraction (this repo)
 
@@ -212,10 +239,11 @@ python train.py \
   --root_path   /mnt/data/gaussianplant_data \
   --model_path  output/newplant9/run \
   --clean_ply   pretrain_clean/newplant9_clean_pruned.ply \
+  --pretrain_path feature_pretrain_dinotxt \
   --load_iteration 30000 \
   --mask_path "" \
   --feature_path "" \
-  --text_feats_path dinov3_text_feats_semantic_refine.pth \
+  --text_feats_path dinotxt_text_feats_semantic_refine.pth \
   --label_init semantic --branch_frac -1 --cluster_size 40 \
   --reg_bind \
   --reg_axis  --lambda_axis 1.0 \
@@ -227,13 +255,13 @@ python train.py \
 
 `--clean_ply` loads the background-removed cloud; StrPr are clustered from it and AppGS
 bound to them. (Alternatively, drop `--clean_ply` and pass `--load_iteration 30000 --rm_bg`
-to load the raw `feature_pretrain` and mask the background on the fly.)
+to load the raw feature pretrain selected by `--pretrain_path` and mask the background on the fly.)
 If a scene has no `masks/` directory, pass `--mask_path ""`; otherwise the loader treats
 the default mask path as required and skips images without masks.
-Per-view DINOv3 feature maps are lazy-loaded: Step 2 stores their paths at startup and
+Per-view semantic feature maps are lazy-loaded: Step 2 stores their paths at startup and
 only reads a `.pth` when `--reg_sem` actually requests feature supervision for that view.
 With `--reg_sem`, use `--feature_cache_size N` to keep the last `N` feature maps in RAM
-(`0` by default, lowest memory; each cached map is about 36 MB for 128x288x512 fp16).
+(`0` by default, lowest memory).
 
 **Outputs** in `output/<scene>/run/point_cloud/iteration_7000/`:
 

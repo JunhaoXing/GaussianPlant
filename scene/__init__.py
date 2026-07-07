@@ -24,8 +24,29 @@ import torch
 from scene.models import CNN_decoder
 from utils.gs_utils import build_mst_from_endpoints, save_mst_ply
 from utils.general_utils import safe_state, get_expon_lr_func, build_rotation
-from utils.visualization import TorchPCA 
+from utils.visualization import TorchPCA
 import numpy as np
+
+
+def torch_load(path, map_location="cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def get_text_features(payload):
+    if "text_feats" in payload:
+        return payload["text_feats"].float()
+    for key in ("text_feats_dim1024", "text_feats_dim128"):
+        if key in payload:
+            return payload[key].float()
+    for key, value in payload.items():
+        if key.startswith("text_feats_dim"):
+            return value.float()
+    raise KeyError("No text feature tensor found. Expected text_feats or text_feats_dim*.")
+
+
 class Scene:
 
     gaussians : GaussianModel
@@ -49,7 +70,7 @@ class Scene:
         else:
             feature = None
 
-        args.pretrain_path =  "feature_pretrain" 
+        args.pretrain_path = getattr(args, "pretrain_path", "feature_pretrain") or "feature_pretrain"
         if load_iteration:
             if load_iteration == -1:
                 self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
@@ -102,25 +123,18 @@ class Scene:
                 text_feats_path = os.path.join(args.root_path, text_feats_path)
         else:
             text_feats_path = os.path.join(args.root_path, "dinov3_text_feats.pth")
-        try:
-            pca_checkpoint = torch.load(
-                os.path.join(args.root_path, 'dinov3_pca.pth'),
-                map_location='cpu',
-                weights_only=False,
-            )
-            text_checkpoints = torch.load(
-                text_feats_path,
-                map_location='cpu',
-                weights_only=False,
-            )
-        except TypeError:
-            pca_checkpoint = torch.load(os.path.join(args.root_path, 'dinov3_pca.pth'), map_location='cpu')
-            text_checkpoints = torch.load(text_feats_path, map_location='cpu')
-        print(f"[Scene] Loaded DINOv3 text prototypes: {text_feats_path}")
-        gaussians.text_feats = text_checkpoints['text_feats_dim128'][:2,].to(args.data_device)  # [leaf, branch]
-        gaussians.text_feats_fgbg = text_checkpoints['text_feats_dim128'][2:,].to(args.data_device)  # [background, plant]
-        gaussians.pca = pca_checkpoint['pca']
-        gaussians.pca_low = pca_checkpoint['pca128']
+        pca_path = os.path.join(args.root_path, 'dinov3_pca.pth')
+        if os.path.exists(pca_path):
+            pca_checkpoint = torch_load(pca_path, map_location='cpu')
+            gaussians.pca = pca_checkpoint.get('pca')
+            gaussians.pca_low = pca_checkpoint.get('pca128')
+        else:
+            print(f"[Scene] PCA checkpoint not found, skipping optional PCA: {pca_path}")
+        text_checkpoints = torch_load(text_feats_path, map_location='cpu')
+        text_feats = get_text_features(text_checkpoints)
+        print(f"[Scene] Loaded text prototypes: {text_feats_path} {tuple(text_feats.shape)}")
+        gaussians.text_feats = text_feats[:2,].to(args.data_device)  # [leaf, branch]
+        gaussians.text_feats_fgbg = text_feats[2:,].to(args.data_device)  # [background, plant]
         
         if self.loaded_iter:
             # keep first two / in self.model_path 
