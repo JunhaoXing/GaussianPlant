@@ -145,7 +145,24 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
+def semantic_feature_dir_for_model(foundation_model, override=""):
+    if override:
+        return override
+    if foundation_model =='sam':
+        return "sam_embeddings"
+    if foundation_model =='lseg':
+        return "rgb_feature_langseg"
+    if foundation_model == 'dinov3':
+        return "dinov3_fmap"
+    if foundation_model == 'dinotxt':
+        return "dinotxt_fmap"
+    raise ValueError(
+        f"Unsupported foundation model '{foundation_model}'. "
+        "Expected sam, lseg, dinov3, or dinotxt."
+    )
+
+
+def readColmapSceneInfo(path, foundation_model, images, eval, semantic_feature_dir="", llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -159,16 +176,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     
     reading_dir = "images" if images == None else images
 
-    if foundation_model =='sam':
-        semantic_feature_dir = "sam_embeddings" 
-    elif foundation_model =='lseg':
-        semantic_feature_dir = "rgb_feature_langseg" 
-    elif foundation_model == 'dinov3':
-        semantic_feature_dir = "dinov3_fmap"
-    elif foundation_model == 'dinotxt':
-        semantic_feature_dir = "dinotxt_fmap"
-    else:
-        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, dinov3, or dinotxt.")
+    semantic_feature_dir = semantic_feature_dir_for_model(foundation_model, semantic_feature_dir)
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir), semantic_feature_folder=os.path.join(path, semantic_feature_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
@@ -260,17 +268,8 @@ def readCamerasFromTransforms(path, transformsfile, white_background, semantic_f
             
     return cam_infos
 
-def readNerfSyntheticInfo(path, foundation_model, white_background, eval, extension=".png"): 
-    if foundation_model =='sam':
-        semantic_feature_dir = "sam_embeddings" 
-    elif foundation_model =='lseg':
-        semantic_feature_dir = "rgb_feature_langseg" 
-    elif foundation_model == 'dinov3':
-        semantic_feature_dir = "dinov3_fmap"
-    elif foundation_model == 'dinotxt':
-        semantic_feature_dir = "dinotxt_fmap"
-    else:
-        raise ValueError(f"Unsupported foundation model '{foundation_model}'. Expected sam, lseg, dinov3, or dinotxt.")
+def readNerfSyntheticInfo(path, foundation_model, white_background, eval, semantic_feature_dir="", extension=".png"): 
+    semantic_feature_dir = semantic_feature_dir_for_model(foundation_model, semantic_feature_dir)
 
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, semantic_feature_folder=os.path.join(path, semantic_feature_dir)) 

@@ -150,7 +150,9 @@ python extract_dinotxt_features.py \
   --max-long-side 1024
 ```
 
-This writes native 1024-d DINOtxt patch features and prompt prototypes:
+This writes native 1024-d DINOtxt patch features and prompt prototypes. To densify
+the 1024-d feature grid with JAFAR, add `--upsampler jafar --feature-long-side 128`
+or another conservative output feature long side.
 
 | asset | description |
 |-------|-------------|

@@ -21,6 +21,8 @@ from pathlib import Path
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".JPG", ".PNG"}
+MASK_EXTS = (".JPG", ".jpg", ".png", ".PNG", ".jpeg", ".JPEG", ".tif", ".tiff")
+IMAGENET_MEAN_RGB = (124, 116, 104)
 DINO_TO_JAFAR_CKPT = {
     "dinov3_vits16": "vit_small_patch16_dinov3.lvd1689m.pth",
     "dinov3_vits16plus": "vit_small_plus_patch16_dinov3.lvd1689m.pth",
@@ -33,6 +35,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Export DINOv3 dense PCA-128 feature maps.")
     parser.add_argument("-s", "--scene", required=True, help="Scene folder containing images/")
     parser.add_argument("--image-dir", default="images", help="Image directory relative to scene")
+    parser.add_argument("--mask-dir", default="",
+                        help="Optional foreground mask dir relative to scene, e.g. masks")
+    parser.add_argument("--mask-mode", choices=("mean", "black", "white", "blur", "fgmean"),
+                        default="mean",
+                        help="How to replace masked-out background before DINO")
+    parser.add_argument("--mask-threshold", type=int, default=128)
+    parser.add_argument("--mask-dilate", type=int, default=0,
+                        help="Dilate foreground mask by this many pixels before applying it")
+    parser.add_argument("--mask-blur-radius", type=float, default=25.0,
+                        help="Gaussian blur radius for --mask-mode blur")
+    parser.add_argument("--missing-mask", choices=("error", "ignore"), default="error",
+                        help="What to do when --mask-dir is set but an image mask is missing")
+    parser.add_argument("--zero-background-features", action="store_true",
+                        help="Set saved feature vectors outside the foreground mask to zero")
     parser.add_argument("--output-dir", default="dinov3_dim128",
                         help="GaussianPlant feature dir relative to scene")
     parser.add_argument("--feature3dgs-dir", default="dinov3_fmap",
@@ -51,6 +67,8 @@ def parse_args():
                         help="Path to save/load PCA. Default: <scene_parent>/dinov3_pca.pth")
     parser.add_argument("--fit-pca", action="store_true",
                         help="Fit PCA even if --pca-path already exists")
+    parser.add_argument("--pca-all-pixels", action="store_true",
+                        help="When masks are used, sample all pixels for PCA instead of foreground only")
     parser.add_argument("--samples-per-image", type=int, default=4096)
     parser.add_argument("--max-pca-samples", type=int, default=200000)
     parser.add_argument("--transform-chunk", type=int, default=262144,
@@ -72,8 +90,8 @@ def parse_args():
 
 
 def lazy_imports():
-    global Image, ImageOps, np, torch, F, PCA
-    from PIL import Image, ImageOps
+    global Image, ImageFilter, ImageOps, np, torch, F, PCA
+    from PIL import Image, ImageFilter, ImageOps
     import numpy as np
     import torch
     import torch.nn.functional as F
@@ -90,6 +108,67 @@ def torch_load(path, map_location="cpu"):
 def list_images(image_dir: Path):
     paths = [p for p in image_dir.iterdir() if p.is_file() and p.suffix in IMAGE_EXTS]
     return sorted(paths, key=lambda p: p.name)
+
+
+def resolve_mask_path(image_path: Path, args):
+    if not args.mask_dir:
+        return None
+    root = Path(args.mask_dir)
+    if not root.is_absolute():
+        root = Path(args.scene) / root
+    candidates = [root / image_path.name]
+    candidates.extend(root / f"{image_path.stem}{ext}" for ext in MASK_EXTS)
+    for path in candidates:
+        if path.exists():
+            return path
+    if args.missing_mask == "ignore":
+        return None
+    raise FileNotFoundError(f"Mask not found for {image_path.name} in {root}")
+
+
+def load_mask_array(image_path: Path, args, size_wh):
+    mask_path = resolve_mask_path(image_path, args)
+    if mask_path is None:
+        return None
+    mask = Image.open(mask_path).convert("L").resize(size_wh, Image.NEAREST)
+    if args.mask_dilate > 0:
+        mask = mask.filter(ImageFilter.MaxFilter(args.mask_dilate * 2 + 1))
+    return np.asarray(mask) > args.mask_threshold
+
+
+def apply_foreground_mask(image_path: Path, image, args):
+    image = image.convert("RGB")
+    mask = load_mask_array(image_path, args, image.size)
+    if mask is None:
+        return image
+
+    arr = np.asarray(image, dtype=np.uint8)
+    if args.mask_mode == "black":
+        background = np.zeros_like(arr)
+    elif args.mask_mode == "white":
+        background = np.full_like(arr, 255)
+    elif args.mask_mode == "blur":
+        background = np.asarray(
+            image.filter(ImageFilter.GaussianBlur(args.mask_blur_radius)),
+            dtype=np.uint8,
+        )
+    elif args.mask_mode == "fgmean" and mask.any():
+        fill = np.round(arr[mask].mean(axis=0)).astype(np.uint8)
+        background = np.broadcast_to(fill, arr.shape).copy()
+    else:
+        fill = np.array(IMAGENET_MEAN_RGB, dtype=np.uint8)
+        background = np.broadcast_to(fill, arr.shape).copy()
+    out = np.where(mask[..., None], arr, background)
+    return Image.fromarray(out.astype(np.uint8), mode="RGB")
+
+
+def feature_mask_for_image(image_path: Path, args, feature_size_wh):
+    if not args.mask_dir:
+        return None
+    mask = load_mask_array(image_path, args, feature_size_wh)
+    if mask is None:
+        return None
+    return mask
 
 
 def round_up_to_multiple(x: int, multiple: int) -> int:
@@ -208,6 +287,7 @@ def auto_find_jafar_ckpt(args):
 def extract_dense_feature(image_path: Path, dinov3, jafar, args, device, patch_size: int):
     with torch.no_grad():
         image = ImageOps.exif_transpose(Image.open(image_path))
+        image = apply_foreground_mask(image_path, image, args)
         orig_w, orig_h = image.size
         in_w, in_h = resize_to_patch_multiple(orig_w, orig_h, patch_size, args.max_long_side)
         out_w, out_h = scaled_size(in_w, in_h, args.output_long_side)
@@ -255,6 +335,15 @@ def load_or_fit_pca(image_paths, dinov3, jafar, args, device, patch_size):
         dense = extract_dense_feature(path, dinov3, jafar, args, device, patch_size)
         c, h, w = dense.shape
         pixels = dense.permute(1, 2, 0).reshape(-1, c).numpy()
+        if args.mask_dir and not args.pca_all_pixels:
+            fg = feature_mask_for_image(path, args, (w, h))
+            if fg is not None:
+                fg = fg.reshape(-1)
+                if fg.any():
+                    pixels = pixels[fg]
+                    print(f"[PCA] foreground pixels for {path.name}: {int(fg.sum())}/{fg.shape[0]}")
+                else:
+                    print(f"[PCA] empty foreground mask for {path.name}; sampling all pixels")
         finite = np.isfinite(pixels).all(axis=1)
         if not finite.all():
             dropped = int((~finite).sum())
@@ -288,7 +377,7 @@ def load_or_fit_pca(image_paths, dinov3, jafar, args, device, patch_size):
     return pca, pca_path
 
 
-def project_feature(dense, pca, chunk: int, save_float32: bool):
+def project_feature(dense, pca, chunk: int, save_float32: bool, foreground_mask=None):
     c, h, w = dense.shape
     pixels = dense.permute(1, 2, 0).reshape(-1, c).numpy()
     pixels = np.nan_to_num(pixels, nan=0.0, posinf=0.0, neginf=0.0)
@@ -300,6 +389,9 @@ def project_feature(dense, pca, chunk: int, save_float32: bool):
     out = torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
     out = F.normalize(out.float(), p=2, dim=0)
     out = torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    if foreground_mask is not None:
+        mask_t = torch.from_numpy(foreground_mask.astype(bool))
+        out = out * mask_t.unsqueeze(0).to(out.dtype)
     return out if save_float32 else out.half()
 
 
@@ -320,7 +412,12 @@ def save_feature_maps(image_paths, dinov3, jafar, pca, args, device, patch_size)
             continue
 
         dense = extract_dense_feature(path, dinov3, jafar, args, device, patch_size)
-        fmap = project_feature(dense, pca, args.transform_chunk, args.save_float32)
+        _, h, w = dense.shape
+        foreground_mask = (
+            feature_mask_for_image(path, args, (w, h))
+            if args.zero_background_features else None
+        )
+        fmap = project_feature(dense, pca, args.transform_chunk, args.save_float32, foreground_mask)
         torch.save(fmap, gp_path)
         if f3dgs_path:
             torch.save(fmap, f3dgs_path)

@@ -13,6 +13,9 @@ DATA_ROOT="${DATA_ROOT:-$ROOT_DIR/dataset}"
 SCENE_PATH="$DATA_ROOT/$SCENE_NAME"
 
 DINO_MAX_LONG_SIDE="${DINO_MAX_LONG_SIDE:-1024}"
+DINOTXT_UPSAMPLER="${DINOTXT_UPSAMPLER:-bilinear}"
+DINOTXT_FEATURE_LONG_SIDE="${DINOTXT_FEATURE_LONG_SIDE:-0}"
+DINOTXT_JAFAR_CKPT="${DINOTXT_JAFAR_CKPT:-}"
 FEATURE3DGS_ITERS="${FEATURE3DGS_ITERS:-30000}"
 STEP2_ITERS="${STEP2_ITERS:-7000}"
 STEP2_RESOLUTION="${STEP2_RESOLUTION:-512}"
@@ -39,6 +42,11 @@ echo "[0/4] Root: $ROOT_DIR"
 echo "[0/4] Scene: $SCENE_PATH"
 echo "[0/4] Logs: $LOG_DIR"
 
+DINOTXT_UPSAMPLE_ARGS=(--feature-long-side "$DINOTXT_FEATURE_LONG_SIDE" --upsampler "$DINOTXT_UPSAMPLER")
+if [[ -n "$DINOTXT_JAFAR_CKPT" ]]; then
+  DINOTXT_UPSAMPLE_ARGS+=(--jafar-ckpt "$DINOTXT_JAFAR_CKPT")
+fi
+
 echo "[1/4] Extracting native DINOtxt-1024 feature maps"
 "$PYTHON" extract_dinotxt_features.py \
   -s "$SCENE_PATH" \
@@ -47,6 +55,7 @@ echo "[1/4] Extracting native DINOtxt-1024 feature maps"
   --feature3dgs-dir dinotxt_fmap \
   --checkpoint-dir checkpoints \
   --max-long-side "$DINO_MAX_LONG_SIDE" \
+  "${DINOTXT_UPSAMPLE_ARGS[@]}" \
   --overwrite \
   2>&1 | tee "$LOG_DIR/step1a_extract_dinotxt.log"
 

@@ -9,7 +9,8 @@ This script keeps the DINOtxt visual/text alignment intact:
 
 The feature maps are low-resolution patch grids by default. That keeps 1024-d maps
 practical for Feature-3DGS; its renderer already resizes rendered feature maps to the
-ground-truth feature map size when computing the feature loss.
+ground-truth feature map size when computing the feature loss. If denser supervision
+is needed, the patch grid can optionally be upsampled with JAFAR.
 """
 
 from __future__ import annotations
@@ -17,10 +18,15 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import sys
 from pathlib import Path
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".JPG", ".PNG"}
+MASK_EXTS = (".JPG", ".jpg", ".png", ".PNG", ".jpeg", ".JPEG", ".tif", ".tiff")
+IMAGENET_MEAN_RGB = (124, 116, 104)
+DINOTXT_FEATURE_DIM = 1024
+DINOTXT_JAFAR_CKPT = "vit_large_patch16_dinov3.lvd1689m.pth"
 DEFAULT_BPE_URL = "https://dl.fbaipublicfiles.com/dinov3/thirdparty/bpe_simple_vocab_16e6.txt.gz"
 DEFAULT_PROMPTS = {
     "leaf": [
@@ -50,6 +56,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Export DINOtxt 1024-d patch feature maps.")
     parser.add_argument("-s", "--scene", required=True, help="Scene folder containing images/")
     parser.add_argument("--image-dir", default="images", help="Image directory relative to scene")
+    parser.add_argument("--mask-dir", default="",
+                        help="Optional foreground mask dir relative to scene, e.g. masks")
+    parser.add_argument("--mask-mode", choices=("mean", "black", "white", "blur", "fgmean"),
+                        default="mean",
+                        help="How to replace masked-out background before DINOtxt")
+    parser.add_argument("--mask-threshold", type=int, default=128)
+    parser.add_argument("--mask-dilate", type=int, default=0,
+                        help="Dilate foreground mask by this many pixels before applying it")
+    parser.add_argument("--mask-blur-radius", type=float, default=25.0,
+                        help="Gaussian blur radius for --mask-mode blur")
+    parser.add_argument("--missing-mask", choices=("error", "ignore"), default="error",
+                        help="What to do when --mask-dir is set but an image mask is missing")
+    parser.add_argument("--zero-background-features", action="store_true",
+                        help="Set saved feature vectors outside the foreground mask to zero")
     parser.add_argument("--output-dir", default="dinotxt_dim1024",
                         help="GaussianPlant feature dir relative to scene")
     parser.add_argument("--feature3dgs-dir", default="dinotxt_fmap",
@@ -71,6 +91,11 @@ def parse_args():
                         help="Resize image long side before DINOtxt; 0 keeps original size")
     parser.add_argument("--feature-long-side", type=int, default=0,
                         help="Optionally upsample feature grid long side; 0 keeps patch grid")
+    parser.add_argument("--upsampler", choices=("bilinear", "jafar"), default="bilinear",
+                        help="Upsampler used when --feature-long-side > 0")
+    parser.add_argument("--jafar-repo", default="third_party/JAFAR")
+    parser.add_argument("--jafar-ckpt", default=None,
+                        help="JAFAR checkpoint. Auto-found from --checkpoint-dir when omitted")
     parser.add_argument("--save-float32", action="store_true",
                         help="Save feature maps as float32 instead of float16")
     parser.add_argument("--overwrite", action="store_true")
@@ -85,8 +110,8 @@ def parse_args():
 
 
 def lazy_imports():
-    global Image, ImageOps, np, torch, F
-    from PIL import Image, ImageOps
+    global Image, ImageFilter, ImageOps, np, torch, F
+    from PIL import Image, ImageFilter, ImageOps
     import numpy as np
     import torch
     import torch.nn.functional as F
@@ -95,6 +120,71 @@ def lazy_imports():
 def list_images(image_dir: Path):
     paths = [p for p in image_dir.iterdir() if p.is_file() and p.suffix in IMAGE_EXTS]
     return sorted(paths, key=lambda p: p.name)
+
+
+def torch_load(path, map_location="cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def resolve_mask_path(image_path: Path, args):
+    if not args.mask_dir:
+        return None
+    root = Path(args.mask_dir)
+    if not root.is_absolute():
+        root = Path(args.scene) / root
+    candidates = [root / image_path.name]
+    candidates.extend(root / f"{image_path.stem}{ext}" for ext in MASK_EXTS)
+    for path in candidates:
+        if path.exists():
+            return path
+    if args.missing_mask == "ignore":
+        return None
+    raise FileNotFoundError(f"Mask not found for {image_path.name} in {root}")
+
+
+def load_mask_array(image_path: Path, args, size_wh):
+    mask_path = resolve_mask_path(image_path, args)
+    if mask_path is None:
+        return None
+    mask = Image.open(mask_path).convert("L").resize(size_wh, Image.NEAREST)
+    if args.mask_dilate > 0:
+        mask = mask.filter(ImageFilter.MaxFilter(args.mask_dilate * 2 + 1))
+    return np.asarray(mask) > args.mask_threshold
+
+
+def apply_foreground_mask(image_path: Path, image, args):
+    image = image.convert("RGB")
+    mask = load_mask_array(image_path, args, image.size)
+    if mask is None:
+        return image
+
+    arr = np.asarray(image, dtype=np.uint8)
+    if args.mask_mode == "black":
+        background = np.zeros_like(arr)
+    elif args.mask_mode == "white":
+        background = np.full_like(arr, 255)
+    elif args.mask_mode == "blur":
+        background = np.asarray(
+            image.filter(ImageFilter.GaussianBlur(args.mask_blur_radius)),
+            dtype=np.uint8,
+        )
+    elif args.mask_mode == "fgmean" and mask.any():
+        fill = np.round(arr[mask].mean(axis=0)).astype(np.uint8)
+        background = np.broadcast_to(fill, arr.shape).copy()
+    else:
+        fill = np.array(IMAGENET_MEAN_RGB, dtype=np.uint8)
+        background = np.broadcast_to(fill, arr.shape).copy()
+    out = np.where(mask[..., None], arr, background)
+    return Image.fromarray(out.astype(np.uint8), mode="RGB")
+
+
+def feature_mask_for_image(image_path: Path, args, feature_size_wh):
+    if not args.mask_dir:
+        return None
+    return load_mask_array(image_path, args, feature_size_wh)
 
 
 def scaled_size(width: int, height: int, max_long_side: int):
@@ -159,6 +249,50 @@ def load_dinotxt(args, device):
     return model, tokenizer
 
 
+def auto_find_jafar_ckpt(args):
+    path = Path(args.checkpoint_dir) / DINOTXT_JAFAR_CKPT
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Expected DINOtxt/JAFAR checkpoint not found: {path}. "
+            "Pass --jafar-ckpt explicitly or use --upsampler bilinear."
+        )
+    print(f"[JAFAR] auto checkpoint: {path}")
+    return path
+
+
+def load_jafar(args, feature_dim, device):
+    if args.upsampler != "jafar":
+        return None
+    if args.feature_long_side <= 0:
+        raise ValueError("--upsampler jafar requires --feature-long-side > 0")
+    if not args.jafar_ckpt:
+        args.jafar_ckpt = str(auto_find_jafar_ckpt(args))
+
+    repo = Path(args.jafar_repo).resolve()
+    sys.path.insert(0, str(repo))
+    from src.upsampler import jafar as jafar_module
+
+    original_create_coordinate = jafar_module.create_coordinate
+
+    def create_coordinate_on_device(h, w, start=0, end=1, device=device, dtype=torch.float32):
+        return original_create_coordinate(h, w, start=start, end=end, device=device, dtype=dtype)
+
+    jafar_module.create_coordinate = create_coordinate_on_device
+    JAFAR = jafar_module.JAFAR
+
+    model = JAFAR(v_dim=feature_dim).to(device).eval()
+    ckpt = torch_load(args.jafar_ckpt, map_location="cpu")
+    state = ckpt.get("jafar", ckpt.get("state_dict", ckpt)) if isinstance(ckpt, dict) else ckpt
+    state = {k.removeprefix("module."): v for k, v in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing:
+        print(f"[JAFAR] missing keys: {len(missing)}")
+    if unexpected:
+        print(f"[JAFAR] unexpected keys: {len(unexpected)}")
+    print(f"[JAFAR] loaded {args.jafar_ckpt}")
+    return model
+
+
 def autocast_context(args, device):
     if device.type != "cuda" or args.dtype == "float32":
         return torch.autocast(device_type=device.type, enabled=False)
@@ -210,6 +344,7 @@ def save_text_features(args, model, tokenizer, device):
 
 def image_to_tensor(image_path: Path, args, device):
     image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
+    image = apply_foreground_mask(image_path, image, args)
     width, height = scaled_size(*image.size, args.max_long_side)
     image = image.resize((width, height), Image.BICUBIC)
     arr = np.asarray(image, dtype=np.float32) / 255.0
@@ -224,7 +359,7 @@ def patch_size(model):
     return int(patch[0] if isinstance(patch, tuple) else patch)
 
 
-def extract_patch_feature(image_path: Path, model, args, device):
+def extract_patch_feature(image_path: Path, model, jafar, args, device):
     image = image_to_tensor(image_path, args, device)
     p = patch_size(model)
     _, _, height, width = image.shape
@@ -241,14 +376,24 @@ def extract_patch_feature(image_path: Path, model, args, device):
     if args.feature_long_side > 0:
         _, h, w = feature.shape
         out_w, out_h = scaled_size(w, h, args.feature_long_side)
-        feature = F.interpolate(feature.unsqueeze(0), size=(out_h, out_w), mode="bilinear", align_corners=False)[0]
+        if jafar is not None:
+            with torch.no_grad():
+                feature = jafar(image.float(), feature.unsqueeze(0), output_size=(out_h, out_w))[0].float()
+        else:
+            feature = F.interpolate(feature.unsqueeze(0), size=(out_h, out_w), mode="bilinear", align_corners=False)[0]
         feature = F.normalize(feature, p=2, dim=0)
 
     feature = torch.nan_to_num(feature, nan=0.0, posinf=0.0, neginf=0.0)
+    if args.zero_background_features:
+        _, h, w = feature.shape
+        foreground_mask = feature_mask_for_image(image_path, args, (w, h))
+        if foreground_mask is not None:
+            mask_t = torch.from_numpy(foreground_mask.astype(bool)).to(feature.device)
+            feature = feature * mask_t.unsqueeze(0).to(feature.dtype)
     return feature if args.save_float32 else feature.half()
 
 
-def save_feature_maps(args, model, device, image_paths):
+def save_feature_maps(args, model, jafar, device, image_paths):
     scene = Path(args.scene)
     out_dir = scene / args.output_dir
     f3dgs_dir = scene / args.feature3dgs_dir if args.feature3dgs_dir else None
@@ -264,7 +409,7 @@ def save_feature_maps(args, model, device, image_paths):
             print(f"[skip] {stem}")
             continue
 
-        feature = extract_patch_feature(image_path, model, args, device)
+        feature = extract_patch_feature(image_path, model, jafar, args, device)
         torch.save(feature.cpu(), gp_path)
         if f3dgs_path:
             torch.save(feature.cpu(), f3dgs_path)
@@ -294,8 +439,12 @@ def main():
     model, tokenizer = load_dinotxt(args, device)
     text_out = save_text_features(args, model, tokenizer, device)
     if not args.only_text:
-        print(f"[DINOtxt] patch_size={patch_size(model)}, images={len(image_paths)}")
-        save_feature_maps(args, model, device, image_paths)
+        jafar = load_jafar(args, DINOTXT_FEATURE_DIM, device)
+        print(
+            f"[DINOtxt] patch_size={patch_size(model)}, images={len(image_paths)}, "
+            f"upsampler={args.upsampler}, feature_long_side={args.feature_long_side}"
+        )
+        save_feature_maps(args, model, jafar, device, image_paths)
     print(f"\nDone. Text features: {text_out}")
 
 

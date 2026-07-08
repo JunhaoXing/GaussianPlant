@@ -51,6 +51,7 @@ class ModelParams(ParamGroup):
         self._foundation_model = "" ###
         self._model_path = ""
         self._images = "images"
+        self.semantic_feature_dir = ""
         self._resolution = -1
         self._white_background = False
         self.data_device = "cuda"

@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum pixels used to fit global PCA.")
     parser.add_argument("--global-pca", action="store_true",
                         help="Fit one PCA across selected maps instead of per-image PCA.")
+    parser.add_argument("--vis-long-side", type=int, default=0,
+                        help="Resize saved visualizations to this long side; 0 keeps feature-map size.")
     parser.add_argument("--no-sheet", action="store_true",
                         help="Do not create a contact sheet.")
     return parser.parse_args()
@@ -56,10 +58,15 @@ def load_feature(path: Path) -> torch.Tensor:
     if feat.ndim != 3:
         raise ValueError(f"Expected CxHxW or HxWxC feature in {path}, got {tuple(feat.shape)}")
     # Saved maps in this project are CxHxW, e.g. 128x288x512. HxWxC maps
-    # usually have the smallest/channel dimension last.
+    # usually have the channel dimension last. DINOtxt patch maps are also
+    # CxHxW, but C=1024 is larger than the spatial grid.
     if feat.shape[0] <= feat.shape[1] and feat.shape[0] <= feat.shape[2]:
         return feat.contiguous()
+    if feat.shape[0] >= feat.shape[1] and feat.shape[0] >= feat.shape[2]:
+        return feat.contiguous()
     if feat.shape[-1] <= feat.shape[0] and feat.shape[-1] <= feat.shape[1]:
+        return feat.permute(2, 0, 1).contiguous()
+    if feat.shape[-1] >= feat.shape[0] and feat.shape[-1] >= feat.shape[1]:
         return feat.permute(2, 0, 1).contiguous()
     raise ValueError(f"Cannot infer channel dimension for {path}: {tuple(feat.shape)}")
 
@@ -131,6 +138,17 @@ def feature_to_rgb(feat: torch.Tensor, pca: PCA | None, sample_step: int) -> Ima
     return Image.fromarray((rgb * 255).astype(np.uint8), mode="RGB")
 
 
+def resize_vis(vis: Image.Image, long_side: int) -> Image.Image:
+    if long_side <= 0:
+        return vis
+    w, h = vis.size
+    scale = long_side / max(w, h)
+    if abs(scale - 1.0) < 1e-6:
+        return vis
+    new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    return vis.resize(new_size, Image.Resampling.NEAREST)
+
+
 def feature_stem(path: Path) -> str:
     name = path.name
     for suffix in ("_dinov3_128.pth", "_fmap_CxHxW.pt", ".pth", ".pt"):
@@ -200,6 +218,7 @@ def main() -> None:
         feat = load_feature(path)
         stem = feature_stem(path)
         vis = feature_to_rgb(feat, pca=pca, sample_step=args.sample_step)
+        vis = resize_vis(vis, args.vis_long_side)
         out_path = out_dir / f"{stem}_feature_pca.png"
         vis.save(out_path)
         panels.append(make_panel(stem, find_image(images_dir, stem), vis))

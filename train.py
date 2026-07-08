@@ -48,7 +48,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations,
 
     strpr = gaussians_pretrain.build_strpr_from_gs(
         cluster_method="kmeans", vis_cluster=False, max_strpr_num=args.max_strpr_num,
-        label_init=args.label_init, branch_frac=args.branch_frac, cluster_size=args.cluster_size)
+        label_init=args.label_init, w_col=args.w_col, w_geo=args.w_geo, w_sem=args.w_sem,
+        branch_frac=args.branch_frac, cluster_size=args.cluster_size)
     strpr.training_setup(opt)
 
     appgas = gaussians_pretrain.build_appgas_from_stprs(use_pretrain=True)
@@ -411,6 +412,12 @@ if __name__ == "__main__":
                         help="fraction of StrPr initialised as branch; <=0 auto-calibrates (Otsu, capped)")
     parser.add_argument("--cluster_size", type=int, default=100,
                         help="avg points per StrPr cluster (smaller -> finer/more StrPr)")
+    parser.add_argument("--w_col", type=float, default=2.0,
+                        help="colour cue weight for joint StrPr label init")
+    parser.add_argument("--w_geo", type=float, default=1.0,
+                        help="geometry cue weight for joint StrPr label init")
+    parser.add_argument("--w_sem", type=float, default=0.5,
+                        help="semantic cue weight for joint StrPr label init")
     parser.add_argument("--prune_isolated", action="store_true", default=False,
                         help="periodically demote spatially-isolated (floating) branch StrPr to leaf")
     parser.add_argument("--prune_iso_factor", type=float, default=2.5,
