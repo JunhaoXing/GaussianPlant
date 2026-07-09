@@ -24,3 +24,4 @@ dinov3
 *.swp
 *.swo
 __pycache__/
+local_test_scripts/

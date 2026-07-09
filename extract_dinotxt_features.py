@@ -90,7 +90,7 @@ def parse_args():
     parser.add_argument("--max-long-side", type=int, default=0,
                         help="Resize image long side before DINOtxt; 0 keeps original size")
     parser.add_argument("--feature-long-side", type=int, default=0,
-                        help="Optionally upsample feature grid long side; 0 keeps patch grid")
+                        help="Force output feature grid long side; 0 keeps patch grid")
     parser.add_argument("--upsampler", choices=("bilinear", "jafar"), default="bilinear",
                         help="Upsampler used when --feature-long-side > 0")
     parser.add_argument("--jafar-repo", default="third_party/JAFAR")
@@ -191,6 +191,13 @@ def scaled_size(width: int, height: int, max_long_side: int):
     if max_long_side <= 0 or max(width, height) <= max_long_side:
         return width, height
     scale = max_long_side / float(max(width, height))
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def target_long_side_size(width: int, height: int, target_long_side: int):
+    if target_long_side <= 0:
+        return width, height
+    scale = target_long_side / float(max(width, height))
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
@@ -375,7 +382,7 @@ def extract_patch_feature(image_path: Path, model, jafar, args, device):
 
     if args.feature_long_side > 0:
         _, h, w = feature.shape
-        out_w, out_h = scaled_size(w, h, args.feature_long_side)
+        out_w, out_h = target_long_side_size(w, h, args.feature_long_side)
         if jafar is not None:
             with torch.no_grad():
                 feature = jafar(image.float(), feature.unsqueeze(0), output_size=(out_h, out_w))[0].float()
